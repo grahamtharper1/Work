@@ -17,9 +17,9 @@ async def convert_sketch(
     line_thickness: int = Query(1, description="Erosion iterations: 1=standard thin, 2=extra fine")
 ):
     """
-    HYBRID APPROACH: Erases the hand-drawn outer ring to replace it with a 
-    perfect mathematical circle, while dynamically capturing and aggressively 
-    smoothing the custom interior drawing (surfer and curved board).
+    HYBRID APPROACH: Draws a perfect outer circle, tightly masks out the original 
+    messy ring, and applies maximum smoothing to melt the wobbly interior figure 
+    into clean, vector-style curves.
     """
     file_bytes = await file.read()
     np_arr = np.frombuffer(file_bytes, np.uint8)
@@ -49,22 +49,24 @@ async def convert_sketch(
     center = (cx, cy)
     radius = max(x_max - x_min, y_max - y_min) // 2
 
-    # 4. DIGITAL ERASER: Create a mask to cut out the messy hand-drawn ring
-    # Keeps only the inner 82% of the drawing (the surfer and surfboard)
+    # 4. DIGITAL ERASER: Tighter mask to cut out all messy hand-drawn ring remnants
     interior_mask = np.zeros_like(binary)
-    cv2.circle(interior_mask, center, int(radius * 0.82), 255, -1)
+    # Reduced to 75% of radius to guarantee stray outer marks are deleted
+    cv2.circle(interior_mask, center, int(radius * 0.75), 255, -1)
     
     interior_ink = cv2.bitwise_and(binary, interior_mask)
 
-    # 5. AGGRESSIVE SMOOTHING on the interior figure only
-    # Fills in gaps and melts jagged wobbly lines into smooth curves
-    smooth_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, smooth_kernel, iterations=3)
+    # 5. EXTREME SMOOTHING on the interior figure
+    # Use a much larger 7x7 circular kernel and 4 iterations to force gaps closed
+    smooth_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, smooth_kernel, iterations=4)
     
-    interior_ink = cv2.GaussianBlur(interior_ink, (9, 9), 0)
+    # Heavy 15x15 blur to melt the jagged edges into smooth, continuous gradients
+    interior_ink = cv2.GaussianBlur(interior_ink, (15, 15), 0)
+    # Hard snap back to solid pixels to create the smooth vector look
     _, interior_ink = cv2.threshold(interior_ink, 127, 255, cv2.THRESH_BINARY)
 
-    # Restore delicate line thickness after blurring
+    # Restore delicate line thickness after the heavy blur
     if line_thickness > 0:
         erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         interior_ink = cv2.erode(interior_ink, erode_kernel, iterations=line_thickness)
@@ -73,7 +75,7 @@ async def convert_sketch(
     h, w = gray.shape
     output = np.zeros((h, w, 4), dtype=np.uint8)
 
-    # Draw the smoothed interior figure in blue
+    # Draw the hyper-smoothed interior figure in blue
     output[interior_ink > 0, 0] = TARGET_BLUE[0]  
     output[interior_ink > 0, 1] = TARGET_BLUE[1]  
     output[interior_ink > 0, 2] = TARGET_BLUE[2]  
