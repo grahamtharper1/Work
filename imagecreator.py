@@ -18,8 +18,8 @@ async def convert_sketch(
 ):
     """
     HYBRID APPROACH: Draws a perfect outer circle, tightly masks out the original 
-    messy ring, and applies aggressive patching to connect broken lines before 
-    smoothing the interior figure into clean, vector-style curves.
+    messy ring, and applies maximum dilation and closing to force broken lines 
+    to connect before smoothing them into clean, vector-style curves.
     """
     file_bytes = await file.read()
     np_arr = np.frombuffer(file_bytes, np.uint8)
@@ -55,20 +55,25 @@ async def convert_sketch(
     
     interior_ink = cv2.bitwise_and(binary, interior_mask)
 
-    # 5. AGGRESSIVE PATCHING AND SMOOTHING
-    # Massive 11x11 kernel to bridge gaps in the head and body lines
-    patch_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, patch_kernel, iterations=5)
-    
-    # Heavy blur to melt the patched blocks into continuous, round gradients
-    interior_ink = cv2.GaussianBlur(interior_ink, (17, 17), 0)
-    # Hard snap back to solid pixels, pulling the threshold down slightly to keep lines thick
-    _, interior_ink = cv2.threshold(interior_ink, 110, 255, cv2.THRESH_BINARY)
+    # 5. MAXIMUM AGGRESSIVE PATCHING (Fusing the gaps)
+    # First, intentionally bloat the ink so it collides across gaps
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    interior_ink = cv2.dilate(interior_ink, dilate_kernel, iterations=3)
 
-    # Restore delicate line thickness after the heavy blur
+    # Now use a massive 21x21 kernel to fuse the bloated ink together permanently
+    patch_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, patch_kernel, iterations=3)
+    
+    # Heavy blur to melt the jagged fused blocks into continuous, round gradients
+    interior_ink = cv2.GaussianBlur(interior_ink, (21, 21), 0)
+    
+    # Hard snap back to solid pixels, pulling the threshold way down to prioritize keeping the patched areas
+    _, interior_ink = cv2.threshold(interior_ink, 80, 255, cv2.THRESH_BINARY)
+
+    # Restore delicate line thickness (compensating for the heavy dilation earlier)
     if line_thickness > 0:
         erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        interior_ink = cv2.erode(interior_ink, erode_kernel, iterations=line_thickness)
+        interior_ink = cv2.erode(interior_ink, erode_kernel, iterations=line_thickness + 2)
 
     # 6. Build Final Canvas (Transparent 4-channel RGBA)
     h, w = gray.shape
