@@ -8,8 +8,7 @@ TARGET_BLUE = (213, 155, 91)   # BGR: Blue=213, Green=155, Red=91
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Dynamic Sketch Converter API is running"}
-
+    return {"status": "ok", "message": "Hybrid Sketch Converter API is running"}
 
 @app.post("/convert-sketch")
 @app.post("/remove-bg")
@@ -18,9 +17,9 @@ async def convert_sketch(
     line_thickness: int = Query(1, description="Erosion iterations: 1=standard thin, 2=extra fine")
 ):
     """
-    Dynamically processes the uploaded hand-drawn sketch (JPG/PNG), isolates ink 
-    using Otsu's thresholding, applies a smoothing filter to the hand-drawn edges, 
-    and converts the unique drawing into a blue icon with a transparent background.
+    HYBRID APPROACH: Erases the hand-drawn outer ring to replace it with a 
+    perfect mathematical circle, while dynamically capturing and aggressively 
+    smoothing the custom interior drawing (surfer and curved board).
     """
     file_bytes = await file.read()
     np_arr = np.frombuffer(file_bytes, np.uint8)
@@ -29,40 +28,62 @@ async def convert_sketch(
     if img is None:
         return Response(content=b"Invalid image file", status_code=400)
 
-    # 1. Convert image to grayscale
+    # 1. Grayscale & Normalize
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # 2. Normalize intensity 
     normalized = cv2.normalize(gray, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
 
-    # 3. Smooth minor paper texture noise
+    # 2. Otsu's Thresholding to extract ink
     blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
-
-    # 4. Otsu's Automatic Thresholding
     _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # 5. DYNAMIC SMOOTHING: Smooth out wobbly ink while keeping the drawing's original shape
-    smooth_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, smooth_kernel, iterations=2)
-    
-    binary = cv2.GaussianBlur(binary, (7, 7), 0)
-    _, binary = cv2.threshold(binary, 127, 255, cv2.THRESH_BINARY)
+    # 3. Find the center and radius based on the total ink footprint
+    y_coords, x_coords = np.where(binary > 0)
+    if len(y_coords) == 0:
+        return Response(content=b"No drawing detected", status_code=400)
 
-    # 6. Thinning (Erosion) to restore delicate line thickness
+    x_min, x_max = np.min(x_coords), np.max(x_coords)
+    y_min, y_max = np.min(y_coords), np.max(y_coords)
+    
+    cx = (x_min + x_max) // 2
+    cy = (y_min + y_max) // 2
+    center = (cx, cy)
+    radius = max(x_max - x_min, y_max - y_min) // 2
+
+    # 4. DIGITAL ERASER: Create a mask to cut out the messy hand-drawn ring
+    # Keeps only the inner 82% of the drawing (the surfer and surfboard)
+    interior_mask = np.zeros_like(binary)
+    cv2.circle(interior_mask, center, int(radius * 0.82), 255, -1)
+    
+    interior_ink = cv2.bitwise_and(binary, interior_mask)
+
+    # 5. AGGRESSIVE SMOOTHING on the interior figure only
+    # Fills in gaps and melts jagged wobbly lines into smooth curves
+    smooth_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, smooth_kernel, iterations=3)
+    
+    interior_ink = cv2.GaussianBlur(interior_ink, (9, 9), 0)
+    _, interior_ink = cv2.threshold(interior_ink, 127, 255, cv2.THRESH_BINARY)
+
+    # Restore delicate line thickness after blurring
     if line_thickness > 0:
         erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        binary = cv2.erode(binary, erode_kernel, iterations=line_thickness)
+        interior_ink = cv2.erode(interior_ink, erode_kernel, iterations=line_thickness)
 
-    # 7. Create transparent 4-channel RGBA canvas
+    # 6. Build Final Canvas (Transparent 4-channel RGBA)
     h, w = gray.shape
     output = np.zeros((h, w, 4), dtype=np.uint8)
 
-    # 8. Colorize extracted drawing lines in target icon blue (#5B9BD5)
-    output[binary > 0, 0] = TARGET_BLUE[0]  
-    output[binary > 0, 1] = TARGET_BLUE[1]  
-    output[binary > 0, 2] = TARGET_BLUE[2]  
-    output[binary > 0, 3] = 255             
+    # Draw the smoothed interior figure in blue
+    output[interior_ink > 0, 0] = TARGET_BLUE[0]  
+    output[interior_ink > 0, 1] = TARGET_BLUE[1]  
+    output[interior_ink > 0, 2] = TARGET_BLUE[2]  
+    output[interior_ink > 0, 3] = 255             
 
-    # 9. Encode and return output image as PNG
+    # 7. Draw a PERFECT mathematical outer circle
+    blue_rgba = (TARGET_BLUE[0], TARGET_BLUE[1], TARGET_BLUE[2], 255)
+    circle_thickness = max(4, int(radius * 0.05))
+    cv2.circle(output, center, int(radius * 0.95), blue_rgba, circle_thickness, lineType=cv2.LINE_AA)
+
+    # Encode and return PNG
     _, img_png = cv2.imencode(".png", output)
     return Response(content=img_png.tobytes(), media_type="image/png")
