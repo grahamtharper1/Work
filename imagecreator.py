@@ -27,22 +27,32 @@ async def convert_sketch(
     np_arr = np.frombuffer(file_bytes, np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-    # Convert to grayscale
+    # 1. Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Invert threshold to separate drawing lines
-    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+    # 2. Smooth slightly to eliminate paper texture noise
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # Thinning (Erosion) to reduce line thickness
+    # 3. Adaptive Thresholding (Handles camera shadows & dim paper lighting)
+    binary = cv2.adaptiveThreshold(
+        blurred, 
+        255, 
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY_INV, 
+        21,  # Region size to evaluate lighting
+        10   # Fine-tune sensitivity to ink
+    )
+
+    # 4. Thinning (Erosion) to keep lines refined
     if line_thickness > 0:
         kernel = np.ones((3, 3), np.uint8)
         binary = cv2.erode(binary, kernel, iterations=line_thickness)
 
-    # Create transparent RGBA canvas
+    # 5. Create transparent RGBA canvas
     h, w = gray.shape
     output = np.zeros((h, w, 4), dtype=np.uint8)
 
-    # Colorize extracted drawing in target icon blue
+    # 6. Colorize extracted drawing lines in target icon blue
     output[binary > 0, 0] = TARGET_BLUE[0] # B
     output[binary > 0, 1] = TARGET_BLUE[1] # G
     output[binary > 0, 2] = TARGET_BLUE[2] # R
