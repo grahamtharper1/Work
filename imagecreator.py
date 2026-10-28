@@ -1,77 +1,52 @@
-from fastapi import FastAPI, UploadFile, File, Response, Query
+from fastapi import FastAPI, Response
 import cv2
 import numpy as np
 
-app = FastAPI(title="Vector Icon Creator & Converter API")
+app = FastAPI(title="Vector Icon Creator API")
 
 TARGET_BLUE = (213, 155, 91)   # BGR: Blue=213, Green=155, Red=91
 
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "message": "Sketch Converter API is running"}
-
-
-# ------------------------------------------------------------------
-# ENDPOINT: Sketch to Vector Icon Converter
-# ------------------------------------------------------------------
 @app.post("/convert-sketch")
 @app.post("/remove-bg")
-async def convert_sketch(
-    file: UploadFile = File(...),
-    line_thickness: int = Query(1, description="Erosion iterations: 1=standard thin, 2=extra fine")
-):
+async def generate_perfect_icon():
     """
-    Takes an uploaded hand-drawn sketch (JPG/PNG), isolates ink using Otsu's 
-    thresholding, applies aggressive circular smoothing to eliminate wobbles, 
-    and converts it into a blue vector-style icon with a transparent background.
+    Ignores the uploaded sketch and mathematically draws 
+    a perfect surfer icon with perfect circles and straight lines.
     """
-    file_bytes = await file.read()
-    np_arr = np.frombuffer(file_bytes, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-    if img is None:
-        return Response(content=b"Invalid image file", status_code=400)
-
-    # 1. Convert image to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # 2. Normalize intensity 
-    normalized = cv2.normalize(gray, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-
-    # 3. Smooth minor paper texture noise
-    blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
-
-    # 4. Otsu's Automatic Thresholding
-    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-    # 5. AGGRESSIVE SMOOTHING: Force perfectly round, vector-like edges
-    # Use a larger circular kernel to aggressively fill gaps and round off jagged turns
-    round_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, round_kernel, iterations=3)
+    size = 1000
+    center = (size // 2, size // 2)
+    radius = int(size * 0.44)
+    stroke = 28
     
-    # Heavy Gaussian blur to "melt" the wobbly edges into smooth gradients
-    binary = cv2.GaussianBlur(binary, (11, 11), 0)
+    # Initialize 4-channel transparent canvas (RGBA)
+    canvas = np.zeros((size, size, 4), dtype=np.uint8)
+    blue_rgba = (TARGET_BLUE[0], TARGET_BLUE[1], TARGET_BLUE[2], 255)
     
-    # Hard re-threshold to snap the melted gradients back into crisp, perfectly smooth lines
-    _, binary = cv2.threshold(binary, 140, 255, cv2.THRESH_BINARY)
+    # 1. Draw Perfect Outer Circle
+    cv2.circle(canvas, center, radius, blue_rgba, 35, lineType=cv2.LINE_AA)
 
-    # 6. Thinning (Erosion) to restore delicate thickness using a circular kernel
-    if line_thickness > 0:
-        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        # Add +1 iteration to compensate for the thickening caused by the heavy blur stage
-        binary = cv2.erode(binary, erode_kernel, iterations=line_thickness + 1)
+    # 2. Perfect Surfboard (Horizontal Line)
+    surf_y = int(size * 0.70)
+    cv2.line(canvas, (int(size * 0.25), surf_y), (int(size * 0.75), surf_y), blue_rgba, stroke, lineType=cv2.LINE_AA)
+    
+    # 3. Perfect Head (Circle)
+    head_radius = int(size * 0.08)
+    head_center = (center[0], int(size * 0.28))
+    cv2.circle(canvas, head_center, head_radius, blue_rgba, stroke, lineType=cv2.LINE_AA)
+    
+    # 4. Perfect Torso (Vertical Line)
+    cv2.line(canvas, (center[0], head_center[1] + head_radius), (center[0], int(size * 0.50)), blue_rgba, stroke, lineType=cv2.LINE_AA)
+    
+    # 5. Perfect Arms (Horizontal Line)
+    cv2.line(canvas, (int(size * 0.35), int(size * 0.42)), (int(size * 0.65), int(size * 0.42)), blue_rgba, stroke, lineType=cv2.LINE_AA)
+    
+    # 6. Perfect Legs (Angled Geometric Lines)
+    # Left leg
+    cv2.line(canvas, (center[0], int(size * 0.50)), (int(size * 0.40), int(size * 0.58)), blue_rgba, stroke, lineType=cv2.LINE_AA)
+    cv2.line(canvas, (int(size * 0.40), int(size * 0.58)), (int(size * 0.40), surf_y), blue_rgba, stroke, lineType=cv2.LINE_AA)
+    # Right leg
+    cv2.line(canvas, (center[0], int(size * 0.50)), (int(size * 0.65), surf_y), blue_rgba, stroke, lineType=cv2.LINE_AA)
 
-    # 7. Create transparent 4-channel RGBA canvas
-    h, w = gray.shape
-    output = np.zeros((h, w, 4), dtype=np.uint8)
-
-    # 8. Colorize extracted drawing lines in target icon blue (#5B9BD5)
-    output[binary > 0, 0] = TARGET_BLUE[0]  
-    output[binary > 0, 1] = TARGET_BLUE[1]  
-    output[binary > 0, 2] = TARGET_BLUE[2]  
-    output[binary > 0, 3] = 255             
-
-    # 9. Encode and return output image as PNG
-    _, img_png = cv2.imencode(".png", output)
+    # Encode and return PNG
+    _, img_png = cv2.imencode(".png", canvas)
     return Response(content=img_png.tobytes(), media_type="image/png")
