@@ -18,8 +18,8 @@ async def convert_sketch(
 ):
     """
     HYBRID APPROACH: Draws a perfect outer circle, tightly masks out the original 
-    messy ring, and applies maximum dilation and closing to force broken lines 
-    to connect before smoothing them into clean, vector-style curves.
+    messy ring, and applies balanced smoothing to bridge minor gaps without 
+    melting independent lines together.
     """
     file_bytes = await file.read()
     np_arr = np.frombuffer(file_bytes, np.uint8)
@@ -49,37 +49,33 @@ async def convert_sketch(
     center = (cx, cy)
     radius = max(x_max - x_min, y_max - y_min) // 2
 
-    # 4. DIGITAL ERASER: Tighter mask to cut out all messy hand-drawn ring remnants
+    # 4. DIGITAL ERASER: Tight mask to cut out the messy hand-drawn ring
     interior_mask = np.zeros_like(binary)
     cv2.circle(interior_mask, center, int(radius * 0.75), 255, -1)
     
     interior_ink = cv2.bitwise_and(binary, interior_mask)
 
-    # 5. MAXIMUM AGGRESSIVE PATCHING (Fusing the gaps)
-    # First, intentionally bloat the ink so it collides across gaps
-    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    interior_ink = cv2.dilate(interior_ink, dilate_kernel, iterations=3)
-
-    # Now use a massive 21x21 kernel to fuse the bloated ink together permanently
-    patch_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
-    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, patch_kernel, iterations=3)
+    # 5. BALANCED SMOOTHING (No extreme dilation)
+    # Moderate closing to bridge the small gaps in the head/legs without fusing the whole body
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, close_kernel, iterations=2)
     
-    # Heavy blur to melt the jagged fused blocks into continuous, round gradients
-    interior_ink = cv2.GaussianBlur(interior_ink, (21, 21), 0)
+    # Moderate blur to smooth edges, not melt them
+    interior_ink = cv2.GaussianBlur(interior_ink, (11, 11), 0)
     
-    # Hard snap back to solid pixels, pulling the threshold way down to prioritize keeping the patched areas
-    _, interior_ink = cv2.threshold(interior_ink, 80, 255, cv2.THRESH_BINARY)
+    # Standard threshold to snap back to solid vector-like lines
+    _, interior_ink = cv2.threshold(interior_ink, 127, 255, cv2.THRESH_BINARY)
 
-    # Restore delicate line thickness (compensating for the heavy dilation earlier)
+    # Restore normal line thickness 
     if line_thickness > 0:
-        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        interior_ink = cv2.erode(interior_ink, erode_kernel, iterations=line_thickness + 2)
+        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        interior_ink = cv2.erode(interior_ink, erode_kernel, iterations=line_thickness)
 
     # 6. Build Final Canvas (Transparent 4-channel RGBA)
     h, w = gray.shape
     output = np.zeros((h, w, 4), dtype=np.uint8)
 
-    # Draw the hyper-smoothed interior figure in blue
+    # Draw the smoothed interior figure in blue
     output[interior_ink > 0, 0] = TARGET_BLUE[0]  
     output[interior_ink > 0, 1] = TARGET_BLUE[1]  
     output[interior_ink > 0, 2] = TARGET_BLUE[2]  
