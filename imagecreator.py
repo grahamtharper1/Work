@@ -18,8 +18,8 @@ async def convert_sketch(
 ):
     """
     HYBRID APPROACH: Draws a perfect outer circle, tightly masks out the original 
-    messy ring, and applies maximum smoothing to melt the wobbly interior figure 
-    into clean, vector-style curves.
+    messy ring, and applies aggressive patching to connect broken lines before 
+    smoothing the interior figure into clean, vector-style curves.
     """
     file_bytes = await file.read()
     np_arr = np.frombuffer(file_bytes, np.uint8)
@@ -51,24 +51,23 @@ async def convert_sketch(
 
     # 4. DIGITAL ERASER: Tighter mask to cut out all messy hand-drawn ring remnants
     interior_mask = np.zeros_like(binary)
-    # Reduced to 75% of radius to guarantee stray outer marks are deleted
     cv2.circle(interior_mask, center, int(radius * 0.75), 255, -1)
     
     interior_ink = cv2.bitwise_and(binary, interior_mask)
 
-    # 5. EXTREME SMOOTHING on the interior figure
-    # Use a much larger 7x7 circular kernel and 4 iterations to force gaps closed
-    smooth_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, smooth_kernel, iterations=4)
+    # 5. AGGRESSIVE PATCHING AND SMOOTHING
+    # Massive 11x11 kernel to bridge gaps in the head and body lines
+    patch_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    interior_ink = cv2.morphologyEx(interior_ink, cv2.MORPH_CLOSE, patch_kernel, iterations=5)
     
-    # Heavy 15x15 blur to melt the jagged edges into smooth, continuous gradients
-    interior_ink = cv2.GaussianBlur(interior_ink, (15, 15), 0)
-    # Hard snap back to solid pixels to create the smooth vector look
-    _, interior_ink = cv2.threshold(interior_ink, 127, 255, cv2.THRESH_BINARY)
+    # Heavy blur to melt the patched blocks into continuous, round gradients
+    interior_ink = cv2.GaussianBlur(interior_ink, (17, 17), 0)
+    # Hard snap back to solid pixels, pulling the threshold down slightly to keep lines thick
+    _, interior_ink = cv2.threshold(interior_ink, 110, 255, cv2.THRESH_BINARY)
 
     # Restore delicate line thickness after the heavy blur
     if line_thickness > 0:
-        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         interior_ink = cv2.erode(interior_ink, erode_kernel, iterations=line_thickness)
 
     # 6. Build Final Canvas (Transparent 4-channel RGBA)
